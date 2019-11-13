@@ -1,0 +1,8 @@
+libdir=@libdir@
+includedir=@incdir@
+
+Name: libvrfmanager-vyatta 
+Description: Vrf manager C libraries
+Version: @version@ 
+Libs: -L${libdir} -lvrfmanager
+Cflags: -I${includedir}

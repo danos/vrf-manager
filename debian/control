@@ -1,0 +1,88 @@
+Source: vrf-manager
+Section: contrib/net
+Priority: extra
+Maintainer: Vyatta Package Maintainers <DL-vyatta-help@att.com>
+Build-Depends:
+ debhelper (>= 9),
+ bvnos-linux-libc-dev,
+ dh-python,
+ python-setuptools,
+ python3-all,
+ python3-setuptools,
+Standards-Version: 3.9.6
+X-Python3-Version: >= 3.2
+
+Package: libvyatta-vrfmanager-perl
+Architecture: all
+Section: contrib/perl
+Depends:
+ libreadonly-perl,
+ linux-image-vrf,
+ ${perl:Depends},
+ ${misc:Depends}
+Breaks: libvyatta-vrfmanager-perl-upstream (<< 3.0)
+Replaces: libvyatta-vrfmanager-perl-upstream (<< 3.0)
+Description: vyatta-vrfmanager-perl module
+ VRF manager Perl libraries
+
+Package: libvyatta-vrfmanager-sh
+Architecture: all
+Replaces: vyatta-routing-v1-yang (<< 0.2)
+Breaks: vyatta-routing-v1-yang (<< 0.2)
+Depends:
+ libvyatta-vrfmanager-perl,
+ ${perl:Depends},
+ ${misc:Depends} 
+Description: vyatta-vrfmanager-sh module
+ Vrf manager shell helpers
+
+Package: python3-vrfmanager
+Architecture: all
+Section: contrib/python
+Depends:
+ libvyatta-vrfmanager-perl,
+ ${python3:Depends},
+ ${misc:Depends}
+X-Python3-Version: >= 3.2
+Description: vyatta-vrfmanager-python module
+ Vrf manager python libraries
+
+Package: libvrfmanager-vyatta-dev
+Architecture: any
+Multi-Arch: same
+Pre-Depends: ${misc:Pre-Depends}
+Section: contrib/libdevel
+Depends: ${misc:Depends}
+Description: vrfmanager-vyatta-dev module
+ Vrf manager C libraries
+
+Package: vrf-manager
+Architecture: all
+Section: contrib/perl
+Depends:
+ libvyatta-vrfmanager-perl,
+ libvyatta-config-perl,
+ linux-image-vrf,
+ iproute2 (>= 4.10.0-1),
+ ${perl:Depends},
+ ${misc:Depends}
+Breaks: vrf-manager-upstream (<< 3.0)
+Replaces: vrf-manager-upstream (<< 3.0)
+Description: VRF Manager core and utilities
+ This utility is used to manage and update VRFs in the system.
+
+Package: chvrf
+Architecture: all
+Section: contrib/perl
+Provides: chvrf-utility
+Depends:
+ libvyatta-vrfmanager-perl,
+ iproute2 (>= 4.14.1-0vyatta3),
+ iproute2 (<< 4.15) | iproute2 (>= 4.15.0-0vyatta2),
+ linux-image-vrf,
+ ${perl:Depends},
+ ${misc:Depends}
+Breaks: chvrf-upstream (<< 3.0)
+Replaces: chvrf-upstream (<< 3.0)
+Description: Utility to run a process in a VRF context
+ This utility is used to run a process in a VRF context.

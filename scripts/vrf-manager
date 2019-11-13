@@ -1,0 +1,353 @@
+#!/usr/bin/perl
+
+# Copyright (c) 2017-2019, AT&T Intellectual Property.  All rights reserved.
+# Copyright (c) 2016 by Brocade Communications Systems, Inc.
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+use strict;
+use warnings;
+
+use Getopt::Long;
+
+use lib "/opt/vyatta/share/perl5/";
+use Vyatta::Config;
+use Vyatta::VrfManager
+  qw(get_vrf_id get_vrf_list get_tbl_id_map get_vrf_name_map $VRFID_INVALID
+     $VRFNAME_DEFAULT $VRFID_DEFAULT $VRFMASTER_PREFIX $VRFNAME_MAX_LEN);
+use Vyatta::VrfManagerWriter qw(set_vrf_map unset_vrf_map);
+use Sys::Syslog qw(:standard :macros);
+use File::Path qw(make_path remove_tree);
+use IPC::Cmd qw(run);
+
+my $ACTION_ADD_VRF = 1;
+my $ACTION_DEL_VRF = 2;
+
+my $SUCCESS = 0;
+my $FAILURE = -1;
+
+my $LOG_NAME = "vrf-manager";
+my $UNREACH_METRIC = 4278198272;
+
+my $RT_TABLE_MAIN = 254;
+my $RT_TABLE_UNSPEC = 0;
+my $RT_TABLE_MAP_START = 256;
+
+my $RUNPARTS = "run-parts";
+my $SCRIPTS = "/opt/vyatta/etc";
+my $POST_VRF_ADD_D = "$SCRIPTS/vrf-manager-add-vrf.d";
+my $POST_TBL_ADD_D = "$SCRIPTS/vrf-manager-add-table.d";
+my $POST_TBL_DEL_D = "$SCRIPTS/vrf-manager-del-table.d";
+
+sub usage() {
+    my $errmsg = <<EOF;
+    $0 --add=vrf
+    $0 --del=vrf
+    $0 --add --all
+    $0 --del --all
+    $0 --add-table <vrf> <pbr-table-id>
+    $0 --del-table <vrf> <pbr-table-id>
+EOF
+    die $errmsg;
+}
+
+my ( $add, @add_table, $del, @del_table, $all );
+
+GetOptions(
+    "add:s" => \$add,
+    "add-table:s{2}" => \@add_table,
+    "del:s" => \$del,
+    "del-table:s{2}" => \@del_table,
+    "all" => \$all
+);
+
+usage() unless ( defined($add) xor defined($del) xor
+                 scalar @add_table xor scalar @del_table );
+usage() if ( length($add) and $all );
+usage() if ( length($del) and $all );
+usage() if ( scalar @add_table and $all );
+usage() if ( scalar @del_table and $all );
+
+add_all_vrf() if ( $all and defined($add) and length($add) == 0 );
+del_all_vrf() if ( $all and defined($del) and length($del) == 0 );
+add_vrf($add) if ($add);
+add_vrf_table($add_table[0], $add_table[1]) if scalar @add_table;
+del_vrf($del) if ($del);
+del_vrf_table($del_table[0], $del_table[1]) if scalar @del_table;
+
+sub lookup_vrf_map {
+    my $vrf_name = shift;
+    my $pbr_tbl_id = shift;
+
+    if ($vrf_name eq $VRFNAME_DEFAULT) {
+        return $pbr_tbl_id;
+    }
+
+    my $vrf_map  = get_vrf_name_map();
+
+    if ( defined $vrf_map->{$vrf_name} &&
+         defined $vrf_map->{$vrf_name}{$pbr_tbl_id} ) {
+        return $vrf_map->{$vrf_name}{$pbr_tbl_id};
+    }
+
+    return $RT_TABLE_UNSPEC;
+}
+
+sub is_mapped_table_id {
+    return shift >= $RT_TABLE_MAP_START;
+}
+
+sub get_sorted_used_ids_list {
+    my $vrfs = get_tbl_id_map();
+
+    my @sorted_list = sort { $a <=> $b } keys %$vrfs;
+    return @sorted_list;
+}
+
+sub get_free_id {
+    my @sorted_id_list = get_sorted_used_ids_list();
+
+    my $free = $RT_TABLE_MAP_START;
+    foreach my $num (@sorted_id_list) {
+        if ( $num > $free ) {
+            last;
+        }
+        $free = $num + 1;
+    }
+
+    return $free;
+}
+
+# ip commands
+sub send_cmd {
+    my ( $action, $tblid, $vrfname ) = @_;
+
+    if ( $action == $ACTION_ADD_VRF ) {
+        system "ip", "link", "add", $VRFMASTER_PREFIX . $vrfname, "type", "vrf", "table", $tblid and return $FAILURE;
+        # Add a default unreachable route to avoid the default
+        # behaviour of falling into the next rule, which would be the
+        # ones for the default VRF (lookup in local & main)
+        if ( system("ip", "link", "set", "dev", $VRFMASTER_PREFIX . $vrfname, "up") ) {
+            system "ip", "link", "delete", $VRFMASTER_PREFIX . $vrfname;
+            return $FAILURE;
+        }
+
+        # Ensure that the local table rule is after the VRF rule
+        # (default pref 1000) so that local routes (in the default
+        # VRF) take take precedence over routes in the VRF for the
+        # input interface.
+        my $output = `ip rule list pref 0`;
+        if (index($output, '0:	from all lookup local') == 0) {
+            system "ip", "rule", "add", "pref", "2000", "table", "local";
+            system "ip", "rule", "del", "pref", "0", "table", "local";
+        }
+        $output = `ip -6 rule list pref 0`;
+        if (index($output, '0:	from all lookup local') == 0) {
+            system "ip", "-6", "rule", "add", "pref", "2000", "table", "local";
+            system "ip", "-6", "rule", "del", "pref", "0", "table", "local";
+        }
+    }
+    elsif ( $action == $ACTION_DEL_VRF ) {
+        system "ip", "-6", "route", "del", "unreachable", "default", "table",
+            $tblid, "metric", $UNREACH_METRIC;
+        system "ip", "route", "del", "unreachable", "default", "table", $tblid,
+            "metric", $UNREACH_METRIC;
+        system "ip", "link", "delete", $VRFMASTER_PREFIX . $vrfname;
+    }
+    else {
+        return $FAILURE;
+    }
+    return $SUCCESS;
+}
+
+sub post_vrf_add {
+    my $vrf_name = shift;
+    my $vrf_id   = shift;
+
+    return if (! -d $POST_VRF_ADD_D);
+
+    system("$RUNPARTS", "--exit-on-error", "$POST_VRF_ADD_D",
+           "--arg", "$vrf_name", "--arg", "$vrf_id");
+}
+
+# Operations
+sub add_vrf {
+    my $vrf_name = shift;
+    my $new_id   = get_vrf_id($vrf_name);
+    my $new_tbl_id;
+
+    # Create VRF->ID mapping
+    if ( $new_id == $VRFID_INVALID ) {
+        if (length($vrf_name) > $VRFNAME_MAX_LEN) {
+            print("Cannot create VRF $vrf_name - name must be ".
+                  "$VRFNAME_MAX_LEN characters or less\n");
+            return $SUCCESS; # keep processing any other VRF
+        }
+
+        $new_tbl_id = get_free_id();
+        set_vrf_map( $vrf_name, $RT_TABLE_MAIN, $new_tbl_id );
+
+        if ( send_cmd( $ACTION_ADD_VRF, $new_tbl_id, $vrf_name ) != $SUCCESS ) {
+            unset_vrf_map($vrf_name, $RT_TABLE_MAIN);
+            return $FAILURE;
+        }
+
+        make_path("/run/dns/vrf/$vrf_name", { mode => 0755 });
+        open(my $fh, '>', "/run/dns/vrf/$vrf_name/hosts")
+            or die "Could not create host file for routing-instance";
+        printf $fh "127.0.0.1\tlocalhost\n";
+        printf $fh "::1\tlocalhost ip6-localhost ip6-loopback\n";
+        close $fh;
+
+        system( "rt_add_del_vrf", "add", $vrf_name );
+
+        # These must be done after notifying other parts of the system
+        # (e.g. routing) otherwise they may not have enough
+        # information to process them correctly.
+        # Use proto zebra so they are ignored by the RIB
+        system "ip", "route", "add", "unreachable", "default", "table",
+            $new_tbl_id, "metric", $UNREACH_METRIC, "proto", "zebra";
+        system "ip", "-6", "route", "add", "unreachable", "default", "table",
+            $new_tbl_id, "metric", $UNREACH_METRIC, "proto", "zebra";
+
+        # Add loopback addresses for the VRF - these are added by
+        # ifupdown for lo, but are done directly here for simplicity
+        system("ip", "address", "add", "dev", $VRFMASTER_PREFIX . $vrf_name, "127.0.0.1/8");
+        system("ip", "-6", "address", "add", "dev", $VRFMASTER_PREFIX . $vrf_name, "::1/128");
+
+        $new_id = get_vrf_id($vrf_name);
+        syslog( LOG_INFO, "VRF $vrf_name [$new_id] created" );
+
+        post_vrf_add($vrf_name, $new_id);
+
+        return $SUCCESS;
+    }
+
+    return $FAILURE;
+}
+
+sub post_table_add {
+    my $vrf_name      = shift;
+    my $vrf_id        = shift;
+    my $pbr_tbl_id    = shift;
+    my $kernel_tbl_id = shift;
+
+    return if (!defined $vrf_id or $vrf_id == $VRFID_INVALID or
+               ! -d $POST_TBL_ADD_D);
+
+    system("$RUNPARTS", "--exit-on-error", "$POST_TBL_ADD_D",
+           "--arg", "$vrf_name", "--arg", "$vrf_id",
+           "--arg", "$pbr_tbl_id", "--arg", "$kernel_tbl_id");
+}
+
+sub add_vrf_table {
+    my $vrf_name = shift;
+    my $pbr_tbl_id = shift;
+    my $kernel_tbl_id;
+    my $vrf_id = get_vrf_id($vrf_name);
+
+    # Create (VRF,PBR-table)->kernel-table-ID mapping
+    $kernel_tbl_id = lookup_vrf_map( $vrf_name, $pbr_tbl_id );
+    if ( $kernel_tbl_id == $RT_TABLE_UNSPEC ) {
+        $kernel_tbl_id = get_free_id();
+        set_vrf_map( $vrf_name, $pbr_tbl_id, $kernel_tbl_id );
+        post_table_add($vrf_name, $vrf_id, $pbr_tbl_id, $kernel_tbl_id);
+    }
+    print $kernel_tbl_id;
+}
+
+sub del_vrf {
+    my $vrf_name = shift;
+
+    my $kernel_tbl_id = lookup_vrf_map($vrf_name, $RT_TABLE_MAIN);
+    if ( is_mapped_table_id($kernel_tbl_id) ) {
+        remove_tree("/run/dns/vrf/$vrf_name");
+        unset_vrf_map($vrf_name, $RT_TABLE_MAIN);
+        system( "rt_add_del_vrf", "del", $vrf_name );
+        send_cmd( $ACTION_DEL_VRF, $kernel_tbl_id, $vrf_name );
+    }
+    return;
+}
+
+sub del_vrf_table {
+    my $vrf_name = shift;
+    my $pbr_tbl_id = shift;
+    my $vrf_id = get_vrf_id($vrf_name);
+
+    # We don't allow the main table mapping to be deleted by this
+    # mechanism. It must be deleted instead using del_vrf.
+    if ($pbr_tbl_id == $RT_TABLE_MAIN) {
+        return $FAILURE;
+    }
+
+    my $kernel_tbl_id = lookup_vrf_map( $vrf_name, $pbr_tbl_id );
+    if ( is_mapped_table_id($kernel_tbl_id) ) {
+        # Discard output to avoid error on one of the scripts
+        # returning non-zero which is expected when the table
+        # shouldn't be destroyed
+        unset_vrf_map( $vrf_name, $pbr_tbl_id )
+            if !scalar run(command => ["run-parts", "--exit-on-error",
+                                       $POST_TBL_DEL_D,
+                                       "--arg", "$vrf_name",
+                                       "--arg", "$pbr_tbl_id",
+                                       "--arg", "$kernel_tbl_id",
+                                       "--arg", "$vrf_id"],
+                           verbose => 0);
+    }
+}
+
+sub get_add_list {
+    my $config = Vyatta::Config->new("routing routing-instance");
+
+    my $vrf_map  = get_vrf_name_map();
+    my $add_list = [];
+
+    # changed or added nodes.
+    for my $node ( $config->listNodes() ) {
+        my $type = $config->returnValue("$node instance-type");
+        unless ( defined( $vrf_map->{$node} ) &&
+                 defined( $vrf_map->{$node}{$RT_TABLE_MAIN} ) ) {
+            push @$add_list, ($node) if ( $type eq "vrf" );
+        }
+    }
+    return $add_list;
+}
+
+sub get_del_list {
+    my $config  = Vyatta::Config->new("routing routing-instance");
+    my $vrf_map = get_vrf_name_map();
+    my $del_list =
+      [ map { defined( $vrf_map->{$_} ) and $_ } $config->listDeleted() ];
+    for my $node ( $config->listNodes() ) {
+        my $type = $config->returnValue("$node instance-type");
+        unless ( defined( $vrf_map->{$node} ) &&
+                 defined( $vrf_map->{$node}{$RT_TABLE_MAIN} ) ) {
+            push @$del_list, $node if ( $type ne "vrf" );
+        }
+    }
+    return $del_list;
+}
+
+sub add_all_vrf {
+    my $add_l = get_add_list();
+    openlog( $LOG_NAME, "pid", LOG_USER );
+    for my $node (@$add_l) {
+        if ( add_vrf($node) != $SUCCESS ) {
+            closelog();
+            return $FAILURE;
+        }
+    }
+    closelog();
+    return;
+}
+
+sub del_all_vrf {
+    my $del_l = get_del_list();
+    openlog( $LOG_NAME, "pid", LOG_USER );
+    for my $node (@$del_l) {
+        del_vrf($node);
+    }
+    closelog();
+    return;
+}

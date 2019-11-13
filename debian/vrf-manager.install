@@ -1,0 +1,3 @@
+scripts/get*vrf* opt/vyatta/sbin/
+scripts/rt_add_del_vrf opt/vyatta/sbin
+scripts/vrf-manager opt/vyatta/sbin

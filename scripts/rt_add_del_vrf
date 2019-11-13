@@ -1,0 +1,71 @@
+#!/bin/bash
+
+ROUTING_SERVICE="vyatta-routing.target"
+SNMPD_SERVICE="snmpd.service"
+SNMP_CONFIG_SCRIPT="/opt/vyatta/sbin/vyatta-snmp.pl"
+SNMP_V3_CONFIG_SCRIPT="/opt/vyatta/sbin/vyatta-snmp-v3.pl"
+
+is_service_running ()
+{
+    local SERVICE=$1
+    systemctl -q is-active ${SERVICE}
+    RET=$?
+    return $RET
+}
+
+reconfigure_snmp ()
+{
+    if is_service_running ${SNMPD_SERVICE}; then
+        if ${SNMP_CONFIG_SCRIPT} --update-snmp; then
+            # Update SNMP V3 config and start snmpd
+            engineid=$((cat /var/lib/snmp/snmpd.conf | grep oldEngineID| sed -re 's/oldEngineID/--oldEngineID/') 2>/dev/null)
+            serialno=$((cat /var/lib/snmp/snmpd.conf | grep setserialno| sed -re 's/setserialno/--setserialno/') 2>/dev/null)
+            extra_options="$engineid $serialno"
+            ${SNMP_V3_CONFIG_SCRIPT} --update-snmp $extra_options
+            if is_service_running ${SNMPD_SERVICE}; then
+                if [ -f /etc/init.d/vyatta-snmp-vrf-agent ] ; then
+                    systemctl restart vyatta-snmp-vrf-agent
+                    systemctl reset-failed vyatta-snmp-vrf-agent
+                fi
+                # Flush restart rate counter
+                systemctl reset-failed ${SNMPD_SERVICE}
+                for d in bgp mrib nsm ospf ospf6 pim rib rip; do
+                    serv="$d"
+                    [ "$serv" != "nsm" ] && serv="${serv}d"
+
+                    if is_service_running "$serv"; then
+                        vtysh -c "configure terminal" \
+                              -c "snmp restart $d"
+                    fi
+                done
+            fi
+        fi
+    fi
+}
+
+configure_vrf ()
+{
+    local ADD_or_DEL=$1
+    local VRF="${@:2}"
+    if is_service_running ${ROUTING_SERVICE} ; then
+        for vrf in "$VRF"; do
+            if [ "$ADD_or_DEL" == "add" ]; then
+                vrfid=$(getvrfid "$vrf")
+                tblid=$(getvrftable --pbr-table "$vrf" 254)
+                vtysh -c "configure terminal" \
+                      -c "ip vrf $vrf $vrfid $tblid"
+            elif [ "$ADD_or_DEL" == "del" ]; then
+                vtysh -c "configure terminal" \
+                      -c "no ip vrf $vrf"
+            else
+                exit
+            fi
+        done
+    fi
+}
+
+if [[ -z "$@" ]]; then
+    exit
+fi
+configure_vrf "$@"
+reconfigure_snmp

@@ -1,0 +1,17 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+
+use lib "/opt/vyatta/share/perl5/";
+use Vyatta::VrfManager qw(get_vrf_list);
+use Getopt::Long;
+
+my $nameonly;
+GetOptions( 'name-only' => \$nameonly );
+
+my @vrflist = get_vrf_list();
+if ($nameonly) {
+    @vrflist = map { s/^(\S+)\s+.*/$1/; $_ } @vrflist;
+}
+print @vrflist;

@@ -1,0 +1,66 @@
+#!/usr/bin/perl
+
+# Copyright (c) 2017-2019, AT&T Intellectual Property.  All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+use strict;
+use warnings;
+
+use Getopt::Long;
+
+use lib "/opt/vyatta/share/perl5/";
+use Vyatta::VrfManager qw(get_tbl_id_map get_vrf_name_map $VRFNAME_DEFAULT);
+
+sub usage() {
+    my $errmsg = <<EOF;
+    $0 --kernel-table <kernel-table-id>
+    $0 --pbr-table <vrf-name> <pbr-table-id>
+EOF
+    die $errmsg;
+}
+
+my ( $kernel, @pbr );
+my $RT_TABLE_MAP_START = 256;
+
+GetOptions(
+    "kernel-table:s" => \$kernel,
+    "pbr-table:s{2}" => \@pbr,
+);
+
+usage() if ( defined($kernel) + (scalar @pbr != 0) != 1);
+
+get_vrf_and_pbr_table_id($kernel) if defined $kernel;
+get_kernel_table_id($pbr[0], $pbr[1]) if scalar @pbr;
+
+sub get_vrf_and_pbr_table_id {
+    my $kernel_tbl_id = shift;
+
+    if ( $kernel_tbl_id < $RT_TABLE_MAP_START ) {
+        print $VRFNAME_DEFAULT . "\n" . $kernel_tbl_id;
+        return;
+    }
+
+    my $tbl_id_hash = get_tbl_id_map();
+
+    die "Unknown kernel id $kernel_tbl_id" if !defined($tbl_id_hash->{$kernel_tbl_id});
+
+    my ($vrf_name, $pbr_table) = @{ $tbl_id_hash->{$kernel_tbl_id} };
+    print $vrf_name . "\n" . $pbr_table;
+}
+
+sub get_kernel_table_id {
+    my $vrf_name = shift;
+    my $pbr_tbl_id = shift;
+
+    if ( $vrf_name eq $VRFNAME_DEFAULT && $pbr_tbl_id < $RT_TABLE_MAP_START ) {
+        print $pbr_tbl_id;
+        return;
+    }
+
+    my $name_hash = get_vrf_name_map();
+
+    die "Unknown VRF and table $vrf_name $pbr_tbl_id" if !defined($name_hash->{$vrf_name}) || !defined($name_hash->{$vrf_name}{$pbr_tbl_id});
+
+    print $name_hash->{$vrf_name}{$pbr_tbl_id};
+}

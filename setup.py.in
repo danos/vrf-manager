@@ -1,0 +1,22 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2019, AT&T Intellectual Property. All rights reserved.
+# Copyright (c) 2016 by Brocade Communications Systems, Inc.
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+#
+# vrfmanager
+#
+
+from setuptools import setup
+
+setup(
+    name='vrfmanager',
+    version='__CHANGELOG_VERSION__',
+    description='Python 3 API for vrf manager library',
+    author='Vyatta Package Maintainers',
+    author_email='DL-vyatta-help@att.com',
+    package_dir = {'': 'lib/python'},
+    packages=['vrfmanager']
+)

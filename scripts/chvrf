@@ -1,0 +1,25 @@
+#!/usr/bin/perl
+
+# Copyright (c) 2017-2019, AT&T Intellectual Property.  All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+use strict;
+use warnings;
+
+use lib "/opt/vyatta/share/perl5/";
+use Vyatta::VrfManager qw($VRFNAME_DEFAULT $VRFNAME_NONE $VRFMASTER_PREFIX);
+
+my $vrf_name = shift;
+
+if (! defined $vrf_name || $vrf_name eq "--help") {
+    die "Usage: chvrf <vrf name> <cmd>\n";
+}
+
+if ($vrf_name eq $VRFNAME_DEFAULT || $vrf_name eq $VRFNAME_NONE) {
+    exec @ARGV;
+} else {
+    $ENV{VYATTA_VRF} = $vrf_name;
+    exec '/bin/ip', 'vrf', 'exec', $VRFMASTER_PREFIX . $vrf_name, @ARGV;
+    die "ip vrf exec $vrf_name \"@ARGV\" failed: $?";
+}

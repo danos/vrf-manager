@@ -1,0 +1,32 @@
+#!/usr/bin/make -f
+
+export PYBUILD_NAME = vrfmanager
+export PYBUILD_SYSTEM = distutils
+export PYBUILD_TEST_ARGS_python3=$(CURDIR)/lib/python
+VERSION := $(shell dpkg-parsechangelog | grep '^Version: ' | awk '{print $$2}')
+
+%:
+	dh $@ --with=python3 --buildsystem=pybuild
+
+%.py: %.py.in
+	sed -e 's/__CHANGELOG_VERSION__/$(VERSION)/' < $< > $@
+
+override_dh_auto_clean: setup.py
+	dh_auto_clean
+	rm -f $(CURDIR)/setup.py
+	rm -rf $(CURDIR)/lib/python/vrfmanager.egg-info
+
+override_dh_auto_build: setup.py
+	make
+	dh_auto_build
+
+override_dh_auto_install: setup.py
+	make install DESTDIR=$(CURDIR)
+	dh_auto_install
+
+override_dh_auto_configure: setup.py
+	dh_auto_configure
+
+override_dh_auto_test:
+	make test
+	dh_auto_test -O--buildsystem=pybuild
